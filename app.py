@@ -128,38 +128,30 @@ def skor_hesapla(df):
         bwp = float((bu - bl).iloc[-2] / bm.iloc[-2]) if float(bm.iloc[-2]) != 0 else bw
         vr = float(v.iloc[-1]) / float(v.rolling(20).mean().iloc[-1])
         stop = round(cl - atrv * 2.0, 2)
+        # Gunluk momentum skoru (gun hissesi icin)
+        gun_skor = 0
+        if 50 < r < 70: gun_skor += 2      # RSI ideal bolgede
+        if stk < 80: gun_skor += 1          # Stoch asiri alimda degil
+        if ml.iloc[-1] > ms.iloc[-1]: gun_skor += 2  # MACD pozitif
+        if adxv > 25: gun_skor += 2         # Guclu trend
+        if vr > 1.5: gun_skor += 2          # Yuksek hacim
+        if cl > e20: gun_skor += 1          # Fiyat EMA20 ustunde
         s = 0
-        if r < 30:
-            s += 2
-        elif r < 55:
-            s += 1
-        if ml.iloc[-1] > ms.iloc[-1]:
-            s += 1
-        if e20 > e50 and e50 > e200:
-            s += 2
-        elif cl > e200:
-            s += 1
-        if adxv > 25:
-            s += 1
-        if stk < 20:
-            s += 1
-        if bwp < 0.05 and bw >= 0.05:
-            s += 1
-        if vr > 1.2:
-            s += 1
+        if r < 30: s += 2
+        elif r < 55: s += 1
+        if ml.iloc[-1] > ms.iloc[-1]: s += 1
+        if e20 > e50 and e50 > e200: s += 2
+        elif cl > e200: s += 1
+        if adxv > 25: s += 1
+        if stk < 20: s += 1
+        if bwp < 0.05 and bw >= 0.05: s += 1
+        if vr > 1.2: s += 1
         return {
-            "RSI": round(r, 1),
-            "Stoch": round(stk, 1),
+            "RSI": round(r, 1), "Stoch": round(stk, 1),
             "MACD": round(float(ml.iloc[-1] - ms.iloc[-1]), 2),
-            "ADX": round(adxv, 1),
-            "ATR": round(atrv, 2),
-            "Stop": stop,
-            "BB_W": round(bw, 3),
-            "VolR": round(vr, 2),
-            "EMA20": round(e20, 2),
-            "EMA50": round(e50, 2),
-            "EMA200": round(e200, 2),
-            "Skor": s,
+            "ADX": round(adxv, 1), "ATR": round(atrv, 2),
+            "Stop": stop, "VolR": round(vr, 2),
+            "Skor": s, "GunSkor": gun_skor,
             "K1G": karar(r, float(ml.iloc[-1]), float(ms.iloc[-1]))
         }
     except:
@@ -182,15 +174,30 @@ def tara_tum(liste, suffix=""):
             k1a = karar_df(da)
             al_puan = sum(1 for k in [t["K1G"], k1h, k1a] if k == "AL")
             sonuc.append({
-                "Hisse": sembol, "Skor": t["Skor"], "RSI": t["RSI"],
-                "Stoch": t["Stoch"], "MACD": t["MACD"], "ADX": t["ADX"],
-                "ATR": t["ATR"], "Stop": t["Stop"],
-                "1G": t["K1G"], "1H": k1h, "1A": k1a,
+                "Hisse": sembol, "Skor": t["Skor"], "GunSkor": t["GunSkor"],
+                "RSI": t["RSI"], "Stoch": t["Stoch"], "MACD": t["MACD"],
+                "ADX": t["ADX"], "ATR": t["ATR"], "Stop": t["Stop"],
+                "VolR": t["VolR"], "1G": t["K1G"], "1H": k1h, "1A": k1a,
                 "AL_Puan": al_puan
             })
         except:
             pass
-    return pd.DataFrame(sonuc).sort_values(["AL_Puan", "Skor"], ascending=False).reset_index(drop=True)
+    return pd.DataFrame(sonuc)
+
+def filtrele_ve_sirala(df):
+    # Haftalik: RSI<70, Stoch<80, sirala
+    haftalik = df[(df["RSI"] < 70) & (df["Stoch"] < 80)].copy()
+    haftalik = haftalik.sort_values(["AL_Puan", "Skor"], ascending=False).reset_index(drop=True)
+    # Gunluk: RSI 45-72, Stoch<85, ADX>20, MACD pozitif, sirala
+    gunluk = df[
+        (df["RSI"] > 45) & (df["RSI"] < 72) &
+        (df["Stoch"] < 85) &
+        (df["ADX"] > 20) &
+        (df["MACD"] > 0) &
+        (df["1G"] == "AL")
+    ].copy()
+    gunluk = gunluk.sort_values("GunSkor", ascending=False).reset_index(drop=True)
+    return haftalik, gunluk
 
 def badge(v):
     if v == "AL":
@@ -207,15 +214,33 @@ def rsi_html(v):
     c = "#f08080" if v > 70 else "#6ee89a" if v < 30 else "#ccc"
     return "<span style='color:" + c + "'>" + str(v) + "</span>"
 
-def tablo_html(df, n=10):
+def tablo_html(df, n, gun_hisse="", hafta_hisseler=None):
+    if hafta_hisseler is None:
+        hafta_hisseler = []
     satirlar = ""
     for i, r in df.head(n).iterrows():
-        bg = "#0d1f0d" if r["AL_Puan"] == 3 else "#111"
+        is_gun = r["Hisse"] == gun_hisse
+        is_hafta = r["Hisse"] in hafta_hisseler
+        if is_gun:
+            bg = "#2d1f00"
+            left_border = "border-left:4px solid #ffd700;"
+            hisse_label = r["Hisse"] + " ⚡"
+            hisse_color = "#ffd700"
+        elif is_hafta:
+            bg = "#0d2040"
+            left_border = "border-left:4px solid #4da6ff;"
+            hisse_label = r["Hisse"] + " ★"
+            hisse_color = "#4da6ff"
+        else:
+            bg = "#111"
+            left_border = ""
+            hisse_label = r["Hisse"]
+            hisse_color = "#fff"
         macd_c = "#6ee89a" if r["MACD"] > 0 else "#f08080"
         adx_c = "#6ee89a" if r["ADX"] > 25 else "#aaa"
         satirlar += (
-            "<tr style='background:" + bg + ";border-bottom:1px solid #222'>"
-            "<td style='padding:8px 10px;font-weight:600;color:#fff'>" + r["Hisse"] + "</td>"
+            "<tr style='background:" + bg + ";border-bottom:1px solid #222;" + left_border + "'>"
+            "<td style='padding:8px 10px;font-weight:700;color:" + hisse_color + "'>" + hisse_label + "</td>"
             "<td style='text-align:center'>" + skor_html(r["Skor"]) + "</td>"
             "<td style='text-align:center'>" + rsi_html(r["RSI"]) + "</td>"
             "<td style='text-align:center;color:#ccc'>" + str(r["Stoch"]) + "</td>"
@@ -248,26 +273,103 @@ def tablo_html(df, n=10):
         "</table></div>"
     )
 
-# ── SAYFA ─────────────────────────────────────────────────
-st.markdown("<h1 style='text-align:center;color:#fff'>📊 Borsa Dashboard</h1>", unsafe_allow_html=True)
+def highlight_box(emoji, baslik, hisse, aciklama, renk):
+    return (
+        "<div style='background:" + renk + ";border-radius:10px;padding:14px 18px;margin-bottom:8px;border-left:5px solid " + renk.replace("1a","ff").replace("0d","88") + "'>"
+        "<div style='font-size:20px;font-weight:800;color:#fff'>" + emoji + "  " + hisse + "</div>"
+        "<div style='font-size:13px;font-weight:600;color:#ddd;margin-top:2px'>" + baslik + "</div>"
+        "<div style='font-size:12px;color:#aaa;margin-top:4px'>" + aciklama + "</div>"
+        "</div>"
+    )
 
+# ── SAYFA ─────────────────────────────────────────────────
+st.markdown("<h1 style='text-align:center;color:#fff;margin-bottom:4px'>📊 Borsa Dashboard</h1>", unsafe_allow_html=True)
 saat = datetime.now().strftime("%d.%m.%Y %H:%M")
 st.markdown(
-    "<p style='text-align:center;color:#8b949e;font-size:13px'>Siralama: AL puani + Teknik Skor (9 uzerinden) | Guncelleme: "
-    + saat + " | ~15 dk gecikmeli</p>",
+    "<p style='text-align:center;color:#8b949e;font-size:13px'>Guncelleme: " + saat +
+    " &nbsp;|&nbsp; Filtre: RSI<70, Stoch<80 &nbsp;|&nbsp; ~15 dk gecikmeli</p>",
     unsafe_allow_html=True
 )
 
 col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 2])
 with col_btn2:
     yenile = st.button("Yenile")
-
 if yenile:
     st.cache_data.clear()
 
 with st.spinner("BIST100 ve S&P500 taraniyor... (3-5 dakika)"):
-    df_bist = tara_tum(BIST100, ".IS")
-    df_sp = tara_tum(SP500, "")
+    df_bist_raw = tara_tum(BIST100, ".IS")
+    df_sp_raw = tara_tum(SP500, "")
+
+df_bist, df_bist_gun = filtrele_ve_sirala(df_bist_raw)
+df_sp, df_sp_gun = filtrele_ve_sirala(df_sp_raw)
+
+# Gunun ve haftanin hisseleri
+bist_gun_hisse = df_bist_gun["Hisse"].iloc[0] if len(df_bist_gun) > 0 else ""
+bist_hafta_hisseler = df_bist.head(2)["Hisse"].tolist() if len(df_bist) >= 2 else []
+sp_gun_hisse = df_sp_gun["Hisse"].iloc[0] if len(df_sp_gun) > 0 else ""
+sp_hafta_hisseler = df_sp.head(2)["Hisse"].tolist() if len(df_sp) >= 2 else []
+
+st.markdown("---")
+
+# Highlight kutulari
+col_h1, col_h2 = st.columns(2)
+
+with col_h1:
+    st.markdown("<div style='margin-bottom:8px'>", unsafe_allow_html=True)
+    if bist_gun_hisse:
+        gun_row = df_bist_gun.iloc[0]
+        st.markdown(highlight_box(
+            "⚡", "GUNUN BIST HISSESI — Gunluk islem icin",
+            bist_gun_hisse,
+            "RSI: " + str(gun_row["RSI"]) + "  |  ADX: " + str(gun_row["ADX"]) + "  |  Hacim: " + str(gun_row["VolR"]) + "x  |  Stop: " + str(gun_row["Stop"]),
+            "#2d1f00"
+        ), unsafe_allow_html=True)
+    if len(bist_hafta_hisseler) >= 1:
+        r1 = df_bist[df_bist["Hisse"] == bist_hafta_hisseler[0]].iloc[0]
+        st.markdown(highlight_box(
+            "★", "HAFTANIN 1. BIST HISSESI — Haftalik islem icin",
+            bist_hafta_hisseler[0],
+            "Skor: " + str(r1["Skor"]) + "/9  |  RSI: " + str(r1["RSI"]) + "  |  1G/1H/1A: " + r1["1G"] + "/" + r1["1H"] + "/" + r1["1A"],
+            "#0d2040"
+        ), unsafe_allow_html=True)
+    if len(bist_hafta_hisseler) >= 2:
+        r2 = df_bist[df_bist["Hisse"] == bist_hafta_hisseler[1]].iloc[0]
+        st.markdown(highlight_box(
+            "★", "HAFTANIN 2. BIST HISSESI — Haftalik islem icin",
+            bist_hafta_hisseler[1],
+            "Skor: " + str(r2["Skor"]) + "/9  |  RSI: " + str(r2["RSI"]) + "  |  1G/1H/1A: " + r2["1G"] + "/" + r2["1H"] + "/" + r2["1A"],
+            "#0d2040"
+        ), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with col_h2:
+    st.markdown("<div style='margin-bottom:8px'>", unsafe_allow_html=True)
+    if sp_gun_hisse:
+        gun_row_sp = df_sp_gun.iloc[0]
+        st.markdown(highlight_box(
+            "⚡", "GUNUN S&P500 HISSESI — Gunluk islem icin",
+            sp_gun_hisse,
+            "RSI: " + str(gun_row_sp["RSI"]) + "  |  ADX: " + str(gun_row_sp["ADX"]) + "  |  Hacim: " + str(gun_row_sp["VolR"]) + "x  |  Stop: " + str(gun_row_sp["Stop"]),
+            "#2d1f00"
+        ), unsafe_allow_html=True)
+    if len(sp_hafta_hisseler) >= 1:
+        r1 = df_sp[df_sp["Hisse"] == sp_hafta_hisseler[0]].iloc[0]
+        st.markdown(highlight_box(
+            "★", "HAFTANIN 1. S&P500 HISSESI — Haftalik islem icin",
+            sp_hafta_hisseler[0],
+            "Skor: " + str(r1["Skor"]) + "/9  |  RSI: " + str(r1["RSI"]) + "  |  1G/1H/1A: " + r1["1G"] + "/" + r1["1H"] + "/" + r1["1A"],
+            "#0d2040"
+        ), unsafe_allow_html=True)
+    if len(sp_hafta_hisseler) >= 2:
+        r2 = df_sp[df_sp["Hisse"] == sp_hafta_hisseler[1]].iloc[0]
+        st.markdown(highlight_box(
+            "★", "HAFTANIN 2. S&P500 HISSESI — Haftalik islem icin",
+            sp_hafta_hisseler[1],
+            "Skor: " + str(r2["Skor"]) + "/9  |  RSI: " + str(r2["RSI"]) + "  |  1G/1H/1A: " + r2["1G"] + "/" + r2["1H"] + "/" + r2["1A"],
+            "#0d2040"
+        ), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -275,17 +377,31 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.markdown("### BIST100 - Top 10")
-    st.markdown(str(len(df_bist)) + " hisse tarandi")
-    st.markdown(tablo_html(df_bist, 10), unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:11px;color:#8b949e;margin-bottom:8px'>"
+        "⚡ Gunun hissesi &nbsp;|&nbsp; ★ Haftanin hisseleri &nbsp;|&nbsp; Filtre: RSI &lt; 70, Stoch &lt; 80"
+        "</div>", unsafe_allow_html=True
+    )
+    st.markdown(
+        tablo_html(df_bist, 10, bist_gun_hisse, bist_hafta_hisseler),
+        unsafe_allow_html=True
+    )
     with st.expander("Tam liste"):
-        st.markdown(tablo_html(df_bist, len(df_bist)), unsafe_allow_html=True)
+        st.markdown(tablo_html(df_bist, len(df_bist), bist_gun_hisse, bist_hafta_hisseler), unsafe_allow_html=True)
 
 with col2:
     st.markdown("### S&P500 - Top 10")
-    st.markdown(str(len(df_sp)) + " hisse tarandi")
-    st.markdown(tablo_html(df_sp, 10), unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:11px;color:#8b949e;margin-bottom:8px'>"
+        "⚡ Gunun hissesi &nbsp;|&nbsp; ★ Haftanin hisseleri &nbsp;|&nbsp; Filtre: RSI &lt; 70, Stoch &lt; 80"
+        "</div>", unsafe_allow_html=True
+    )
+    st.markdown(
+        tablo_html(df_sp, 10, sp_gun_hisse, sp_hafta_hisseler),
+        unsafe_allow_html=True
+    )
     with st.expander("Tam liste"):
-        st.markdown(tablo_html(df_sp, len(df_sp)), unsafe_allow_html=True)
+        st.markdown(tablo_html(df_sp, len(df_sp), sp_gun_hisse, sp_hafta_hisseler), unsafe_allow_html=True)
 
 st.markdown("---")
 st.markdown(
