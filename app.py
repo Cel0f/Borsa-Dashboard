@@ -51,6 +51,7 @@ SP500 = [
     "NXPI","MCHP","KLAC","LRCX","AMAT","MU","PANW","CRWD","SNOW","PLTR"
 ]
 
+# ── GOستERGELER ──────────────────────────────────────────
 def calc_rsi(close, period=14):
     delta = close.diff()
     ag = delta.clip(lower=0).ewm(com=period-1, min_periods=period).mean()
@@ -88,6 +89,15 @@ def calc_atr(high, low, close, p=14):
     tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
     return tr.ewm(span=p, adjust=False).mean()
 
+def calc_aroon(high, low, period=14):
+    aroon_up = high.rolling(period + 1).apply(lambda x: (x.argmax() / period) * 100, raw=True)
+    aroon_dn = low.rolling(period + 1).apply(lambda x: (x.argmin() / period) * 100, raw=True)
+    return aroon_up, aroon_dn, aroon_up - aroon_dn
+
+def calc_obv(close, volume):
+    direction = np.sign(close.diff()).fillna(0)
+    return (direction * volume).cumsum()
+
 def karar(r, ml, ms):
     if r > 55 and ml > ms:
         return "AL"
@@ -110,48 +120,90 @@ def skor_hesapla(df):
     if df is None or len(df) < 30:
         return None
     try:
-        c = df["Close"].squeeze().astype(float)
-        h = df["High"].squeeze().astype(float)
-        l = df["Low"].squeeze().astype(float)
-        v = df["Volume"].squeeze().astype(float)
-        r = float(calc_rsi(c).iloc[-1])
-        ml, ms = calc_macd(c)
-        e20 = float(calc_ema(c, 20).iloc[-1])
-        e50 = float(calc_ema(c, 50).iloc[-1])
-        e200 = float(calc_ema(c, 200).iloc[-1]) if len(c) >= 200 else float(calc_ema(c, 50).iloc[-1])
-        adxv = float(calc_adx(h, l, c).iloc[-1])
-        stk = float(calc_stoch(h, l, c).iloc[-1])
-        atrv = float(calc_atr(h, l, c).iloc[-1])
-        cl = float(c.iloc[-1])
+        c   = df["Close"].squeeze().astype(float)
+        h   = df["High"].squeeze().astype(float)
+        l   = df["Low"].squeeze().astype(float)
+        v   = df["Volume"].squeeze().astype(float)
+
+        r        = float(calc_rsi(c).iloc[-1])
+        ml, ms   = calc_macd(c)
+        e9       = float(calc_ema(c, 9).iloc[-1])
+        e20      = float(calc_ema(c, 20).iloc[-1])
+        e50      = float(calc_ema(c, 50).iloc[-1])
+        e200     = float(calc_ema(c, 200).iloc[-1]) if len(c) >= 200 else float(calc_ema(c, 50).iloc[-1])
+        adxv     = float(calc_adx(h, l, c).iloc[-1])
+        stk      = float(calc_stoch(h, l, c).iloc[-1])
+        atrv     = float(calc_atr(h, l, c).iloc[-1])
+        atr_pct  = round(atrv / float(c.iloc[-1]) * 100, 2)
+        cl       = float(c.iloc[-1])
         bu, bm, bl = calc_bb(c)
-        bw = float((bu - bl).iloc[-1] / bm.iloc[-1]) if float(bm.iloc[-1]) != 0 else 0
-        bwp = float((bu - bl).iloc[-2] / bm.iloc[-2]) if float(bm.iloc[-2]) != 0 else bw
-        vr = float(v.iloc[-1]) / float(v.rolling(20).mean().iloc[-1])
-        stop = round(cl - atrv * 2.0, 2)
-        # Gunluk momentum skoru (gun hissesi icin)
-        gun_skor = 0
-        if 50 < r < 70: gun_skor += 2      # RSI ideal bolgede
-        if stk < 80: gun_skor += 1          # Stoch asiri alimda degil
-        if ml.iloc[-1] > ms.iloc[-1]: gun_skor += 2  # MACD pozitif
-        if adxv > 25: gun_skor += 2         # Guclu trend
-        if vr > 1.5: gun_skor += 2          # Yuksek hacim
-        if cl > e20: gun_skor += 1          # Fiyat EMA20 ustunde
+        bw       = float((bu - bl).iloc[-1] / bm.iloc[-1]) if float(bm.iloc[-1]) != 0 else 0
+        bwp      = float((bu - bl).iloc[-2] / bm.iloc[-2]) if float(bm.iloc[-2]) != 0 else bw
+        vr       = float(v.iloc[-1]) / float(v.rolling(20).mean().iloc[-1])
+        stop     = round(cl - atrv * 2.0, 2)
+
+        # Aroon
+        aroon_up, aroon_dn, aroon_osc = calc_aroon(h, l, 14)
+        aroon_val = float(aroon_osc.iloc[-1])
+        aroon_up_val = float(aroon_up.iloc[-1])
+
+        # OBV trend (son 5 gun yukseliyor mu)
+        obv = calc_obv(c, v)
+        obv_trend = float(obv.iloc[-1]) > float(obv.iloc[-6]) if len(obv) >= 6 else False
+
+        macd_diff = float(ml.iloc[-1] - ms.iloc[-1])
+
+        # ── TEKNIK SKOR (9 uzerinden) ─────────────────────
         s = 0
-        if r < 30: s += 2
-        elif r < 55: s += 1
-        if ml.iloc[-1] > ms.iloc[-1]: s += 1
-        if e20 > e50 and e50 > e200: s += 2
-        elif cl > e200: s += 1
-        if adxv > 25: s += 1
-        if stk < 20: s += 1
-        if bwp < 0.05 and bw >= 0.05: s += 1
-        if vr > 1.2: s += 1
+        if r < 30:                           s += 2
+        elif r < 55:                         s += 1
+        if ml.iloc[-1] > ms.iloc[-1]:        s += 1
+        if e20 > e50 and e50 > e200:         s += 2
+        elif cl > e200:                      s += 1
+        if adxv > 25:                        s += 1
+        if stk < 20:                         s += 1
+        if bwp < 0.05 and bw >= 0.05:        s += 1
+        if vr > 1.2:                         s += 1
+
+        # ── HAFTALIK SKOR (Pzt-Cuma) ──────────────────────
+        # RSI 45-65, Stoch<75, ADX>25, MACD pozitif,
+        # EMA tam sirali, Aroon>50, OBV yukseliyor, Hacim>1.2x
+        hs = 0
+        if 45 <= r <= 65:                    hs += 2
+        if stk < 75:                         hs += 1
+        if adxv > 25:                        hs += 2
+        if ml.iloc[-1] > ms.iloc[-1]:        hs += 2
+        if e20 > e50 and e50 > e200:         hs += 2
+        if aroon_val > 50:                   hs += 2
+        if obv_trend:                        hs += 2
+        if vr > 1.2:                         hs += 1
+        # max 16
+
+        # ── GUNLUK SKOR (sabah-aksam) ──────────────────────
+        # RSI 50-68, ADX>25, Aroon>60, Hacim>1.5x,
+        # EMA9 ustunde, ATR%>1, Stoch 40-75
+        gs = 0
+        if 50 <= r <= 68:                    gs += 2
+        if adxv > 25:                        gs += 2
+        if aroon_val > 60:                   gs += 3
+        if aroon_up_val > 70:                gs += 1
+        if vr > 1.5:                         gs += 3
+        if cl > e9:                          gs += 2
+        if atr_pct > 1.5:                    gs += 2
+        if 40 <= stk <= 75:                  gs += 1
+        if ml.iloc[-1] > ms.iloc[-1]:        gs += 1
+        # max 17
+
         return {
             "RSI": round(r, 1), "Stoch": round(stk, 1),
-            "MACD": round(float(ml.iloc[-1] - ms.iloc[-1]), 2),
-            "ADX": round(adxv, 1), "ATR": round(atrv, 2),
+            "MACD": round(macd_diff, 2), "ADX": round(adxv, 1),
+            "ATR": round(atrv, 2), "ATR_pct": atr_pct,
             "Stop": stop, "VolR": round(vr, 2),
-            "Skor": s, "GunSkor": gun_skor,
+            "Aroon": round(aroon_val, 1),
+            "OBV_trend": obv_trend,
+            "EMA9_ok": cl > e9,
+            "EMA_sirali": e20 > e50 and e50 > e200,
+            "Skor": s, "HSkor": hs, "GSkor": gs,
             "K1G": karar(r, float(ml.iloc[-1]), float(ms.iloc[-1]))
         }
     except:
@@ -162,8 +214,8 @@ def tara_tum(liste, suffix=""):
     sonuc = []
     for sembol in liste:
         try:
-            dg = yf.download(sembol + suffix, period="2y", interval="1d", progress=False, auto_adjust=True)
-            dh = yf.download(sembol + suffix, period="5y", interval="1wk", progress=False, auto_adjust=True)
+            dg = yf.download(sembol + suffix, period="2y",  interval="1d",  progress=False, auto_adjust=True)
+            dh = yf.download(sembol + suffix, period="5y",  interval="1wk", progress=False, auto_adjust=True)
             da = yf.download(sembol + suffix, period="10y", interval="1mo", progress=False, auto_adjust=True)
             if dg is None or len(dg) < 30:
                 continue
@@ -174,41 +226,58 @@ def tara_tum(liste, suffix=""):
             k1a = karar_df(da)
             al_puan = sum(1 for k in [t["K1G"], k1h, k1a] if k == "AL")
             sonuc.append({
-                "Hisse": sembol, "Skor": t["Skor"], "GunSkor": t["GunSkor"],
-                "RSI": t["RSI"], "Stoch": t["Stoch"], "MACD": t["MACD"],
-                "ADX": t["ADX"], "ATR": t["ATR"], "Stop": t["Stop"],
-                "VolR": t["VolR"], "1G": t["K1G"], "1H": k1h, "1A": k1a,
+                "Hisse": sembol, "Skor": t["Skor"],
+                "HSkor": t["HSkor"], "GSkor": t["GSkor"],
+                "RSI": t["RSI"], "Stoch": t["Stoch"],
+                "MACD": t["MACD"], "ADX": t["ADX"],
+                "ATR": t["ATR"], "ATR_pct": t["ATR_pct"],
+                "Stop": t["Stop"], "VolR": t["VolR"],
+                "Aroon": t["Aroon"], "OBV": "↑" if t["OBV_trend"] else "↓",
+                "EMA9": "✓" if t["EMA9_ok"] else "✗",
+                "1G": t["K1G"], "1H": k1h, "1A": k1a,
                 "AL_Puan": al_puan
             })
         except:
             pass
     return pd.DataFrame(sonuc)
 
-def filtrele_ve_sirala(df):
-    # Haftalik: RSI<70, Stoch<80, sirala
-    haftalik = df[(df["RSI"] < 70) & (df["Stoch"] < 80)].copy()
-    haftalik = haftalik.sort_values(["AL_Puan", "Skor"], ascending=False).reset_index(drop=True)
-    # Gunluk: RSI 45-72, Stoch<85, ADX>20, MACD pozitif, sirala
-    gunluk = df[
-        (df["RSI"] > 45) & (df["RSI"] < 72) &
-        (df["Stoch"] < 85) &
-        (df["ADX"] > 20) &
+def sec_hisseler(df):
+    # Haftalik: RSI 45-65, Stoch<75, HSkor sirali
+    haftalik = df[
+        (df["RSI"] >= 45) & (df["RSI"] <= 65) &
+        (df["Stoch"] < 75) &
+        (df["ADX"] > 25) &
         (df["MACD"] > 0) &
         (df["1G"] == "AL")
-    ].copy()
-    gunluk = gunluk.sort_values("GunSkor", ascending=False).reset_index(drop=True)
-    return haftalik, gunluk
+    ].copy().sort_values("HSkor", ascending=False).reset_index(drop=True)
+
+    # Gunluk: RSI 50-68, Stoch 40-75, ADX>25, GSkor sirali
+    gunluk = df[
+        (df["RSI"] >= 50) & (df["RSI"] <= 68) &
+        (df["Stoch"] >= 40) & (df["Stoch"] <= 75) &
+        (df["ADX"] > 25) &
+        (df["MACD"] > 0) &
+        (df["1G"] == "AL") &
+        (df["VolR"] > 1.2)
+    ].copy().sort_values("GSkor", ascending=False).reset_index(drop=True)
+
+    # Top10 genel: RSI<70, Stoch<80
+    top10 = df[
+        (df["RSI"] < 70) & (df["Stoch"] < 80)
+    ].copy().sort_values(["AL_Puan", "HSkor"], ascending=False).reset_index(drop=True)
+
+    return haftalik, gunluk, top10
 
 def badge(v):
     if v == "AL":
-        return "<span style='background:#0d3320;color:#6ee89a;padding:2px 9px;border-radius:4px;font-size:11px;font-weight:700'>AL</span>"
+        return "<span style='background:#0d3320;color:#6ee89a;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700'>AL</span>"
     if v == "SAT":
-        return "<span style='background:#3d0c0c;color:#f08080;padding:2px 9px;border-radius:4px;font-size:11px;font-weight:700'>SAT</span>"
-    return "<span style='background:#3d2e00;color:#f0c060;padding:2px 9px;border-radius:4px;font-size:11px;font-weight:700'>NOTR</span>"
+        return "<span style='background:#3d0c0c;color:#f08080;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700'>SAT</span>"
+    return "<span style='background:#3d2e00;color:#f0c060;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700'>NOTR</span>"
 
-def skor_html(v):
-    c = "#1a9e4a" if v >= 7 else "#e08800" if v >= 5 else "#c0392b"
-    return "<span style='color:" + c + ";font-weight:700;font-size:13px'>" + str(v) + "/9</span>"
+def skor_html(v, mx=9):
+    c = "#1a9e4a" if v >= mx*0.77 else "#e08800" if v >= mx*0.54 else "#c0392b"
+    return "<span style='color:" + c + ";font-weight:700'>" + str(v) + "/" + str(mx) + "</span>"
 
 def rsi_html(v):
     c = "#f08080" if v > 70 else "#6ee89a" if v < 30 else "#ccc"
@@ -219,34 +288,33 @@ def tablo_html(df, n, gun_hisse="", hafta_hisseler=None):
         hafta_hisseler = []
     satirlar = ""
     for i, r in df.head(n).iterrows():
-        is_gun = r["Hisse"] == gun_hisse
+        is_gun   = r["Hisse"] == gun_hisse
         is_hafta = r["Hisse"] in hafta_hisseler
         if is_gun:
-            bg = "#2d1f00"
-            left_border = "border-left:4px solid #ffd700;"
-            hisse_label = r["Hisse"] + " ⚡"
-            hisse_color = "#ffd700"
+            bg = "#2d1f00"; border = "border-left:4px solid #ffd700;"
+            label = r["Hisse"] + " ⚡"; color = "#ffd700"
         elif is_hafta:
-            bg = "#0d2040"
-            left_border = "border-left:4px solid #4da6ff;"
-            hisse_label = r["Hisse"] + " ★"
-            hisse_color = "#4da6ff"
+            bg = "#0d2040"; border = "border-left:4px solid #4da6ff;"
+            label = r["Hisse"] + " ★"; color = "#4da6ff"
         else:
-            bg = "#111"
-            left_border = ""
-            hisse_label = r["Hisse"]
-            hisse_color = "#fff"
-        macd_c = "#6ee89a" if r["MACD"] > 0 else "#f08080"
-        adx_c = "#6ee89a" if r["ADX"] > 25 else "#aaa"
+            bg = "#111"; border = ""; label = r["Hisse"]; color = "#fff"
+        mc = "#6ee89a" if r["MACD"] > 0 else "#f08080"
+        ac = "#6ee89a" if r["ADX"] > 25 else "#aaa"
+        arc = "#6ee89a" if r["Aroon"] > 50 else "#aaa"
+        obc = "#6ee89a" if r["OBV"] == "↑" else "#f08080"
+        e9c = "#6ee89a" if r["EMA9"] == "✓" else "#f08080"
         satirlar += (
-            "<tr style='background:" + bg + ";border-bottom:1px solid #222;" + left_border + "'>"
-            "<td style='padding:8px 10px;font-weight:700;color:" + hisse_color + "'>" + hisse_label + "</td>"
+            "<tr style='background:" + bg + ";border-bottom:1px solid #1a1a1a;" + border + "'>"
+            "<td style='padding:7px 10px;font-weight:700;color:" + color + "'>" + label + "</td>"
             "<td style='text-align:center'>" + skor_html(r["Skor"]) + "</td>"
             "<td style='text-align:center'>" + rsi_html(r["RSI"]) + "</td>"
             "<td style='text-align:center;color:#ccc'>" + str(r["Stoch"]) + "</td>"
-            "<td style='text-align:center;color:" + macd_c + "'>" + str(r["MACD"]) + "</td>"
-            "<td style='text-align:center;color:" + adx_c + "'>" + str(r["ADX"]) + "</td>"
-            "<td style='text-align:center;color:#e08800'>" + str(r["ATR"]) + "</td>"
+            "<td style='text-align:center;color:" + mc + "'>" + str(r["MACD"]) + "</td>"
+            "<td style='text-align:center;color:" + ac + "'>" + str(r["ADX"]) + "</td>"
+            "<td style='text-align:center;color:" + arc + "'>" + str(r["Aroon"]) + "</td>"
+            "<td style='text-align:center;color:" + obc + "'>" + r["OBV"] + "</td>"
+            "<td style='text-align:center;color:" + e9c + "'>" + r["EMA9"] + "</td>"
+            "<td style='text-align:center;color:#e08800'>" + str(r["ATR_pct"]) + "%</td>"
             "<td style='text-align:center;color:#f08080'>" + str(r["Stop"]) + "</td>"
             "<td style='text-align:center'>" + badge(r["1G"]) + "</td>"
             "<td style='text-align:center'>" + badge(r["1H"]) + "</td>"
@@ -257,29 +325,83 @@ def tablo_html(df, n, gun_hisse="", hafta_hisseler=None):
         "<div style='overflow-x:auto'>"
         "<table style='width:100%;border-collapse:collapse;font-size:12px;font-family:monospace'>"
         "<thead><tr style='color:#8b949e;border-bottom:2px solid #30363d;background:#0d1117'>"
-        "<th style='padding:8px 10px;text-align:left'>Hisse</th>"
-        "<th style='padding:8px'>Skor</th>"
-        "<th style='padding:8px'>RSI</th>"
-        "<th style='padding:8px'>Stoch</th>"
-        "<th style='padding:8px'>MACD</th>"
-        "<th style='padding:8px'>ADX</th>"
-        "<th style='padding:8px'>ATR</th>"
-        "<th style='padding:8px'>Stop</th>"
-        "<th style='padding:8px'>1G</th>"
-        "<th style='padding:8px'>1H</th>"
-        "<th style='padding:8px'>1A</th>"
+        "<th style='padding:7px 10px;text-align:left'>Hisse</th>"
+        "<th style='padding:7px'>Skor</th>"
+        "<th style='padding:7px'>RSI</th>"
+        "<th style='padding:7px'>Stoch</th>"
+        "<th style='padding:7px'>MACD</th>"
+        "<th style='padding:7px'>ADX</th>"
+        "<th style='padding:7px'>Aroon</th>"
+        "<th style='padding:7px'>OBV</th>"
+        "<th style='padding:7px'>EMA9</th>"
+        "<th style='padding:7px'>ATR%</th>"
+        "<th style='padding:7px'>Stop</th>"
+        "<th style='padding:7px'>1G</th>"
+        "<th style='padding:7px'>1H</th>"
+        "<th style='padding:7px'>1A</th>"
         "</tr></thead>"
         "<tbody>" + satirlar + "</tbody>"
         "</table></div>"
     )
 
-def highlight_box(emoji, baslik, hisse, aciklama, renk):
+def highlight_box(emoji, baslik, hisse, detay, bg, border_color):
     return (
-        "<div style='background:" + renk + ";border-radius:10px;padding:14px 18px;margin-bottom:8px;border-left:5px solid " + renk.replace("1a","ff").replace("0d","88") + "'>"
-        "<div style='font-size:20px;font-weight:800;color:#fff'>" + emoji + "  " + hisse + "</div>"
-        "<div style='font-size:13px;font-weight:600;color:#ddd;margin-top:2px'>" + baslik + "</div>"
-        "<div style='font-size:12px;color:#aaa;margin-top:4px'>" + aciklama + "</div>"
+        "<div style='background:" + bg + ";border-radius:10px;padding:14px 18px;"
+        "margin-bottom:8px;border-left:5px solid " + border_color + "'>"
+        "<div style='font-size:22px;font-weight:800;color:#fff'>" + emoji + "  " + hisse + "</div>"
+        "<div style='font-size:12px;font-weight:600;color:#bbb;margin-top:2px'>" + baslik + "</div>"
+        "<div style='font-size:11px;color:#888;margin-top:4px'>" + detay + "</div>"
         "</div>"
+    )
+
+def legend_html(tip):
+    if tip == "gun":
+        items = [
+            ("RSI", "50 – 68", "Momentum var, kosmamiş"),
+            ("Stoch", "40 – 75", "Hareket odasi var"),
+            ("ADX", "> 25", "Guclu trend"),
+            ("Aroon", "> 60", "Cok taze hareket"),
+            ("EMA9", "Fiyat ustunde", "Kisa vade guclu"),
+            ("Hacim", "> 1.5x", "Yuksek ilgi"),
+            ("ATR%", "> 1.5%", "Gunluk hareket potansiyeli"),
+            ("MACD", "Pozitif", "Momentum yukari"),
+        ]
+        baslik = "⚡ Gunluk Kural Seti"
+        renk = "#ffd700"
+    else:
+        items = [
+            ("RSI", "45 – 65", "Ne asiri alim ne satim"),
+            ("Stoch", "< 75", "Asiri alimda degil"),
+            ("ADX", "> 25", "Trend guclu"),
+            ("MACD", "Pozitif", "Momentum yukari"),
+            ("EMA", "20>50>200", "Tam sirali trend"),
+            ("Aroon", "> 50", "Trend taze"),
+            ("OBV", "Yukseliyor", "Para girisi var"),
+            ("Hacim", "> 1.2x", "Ilgi artiyor"),
+        ]
+        baslik = "★ Haftalik Kural Seti"
+        renk = "#4da6ff"
+
+    satirlar = ""
+    for param, esik, aciklama in items:
+        satirlar += (
+            "<tr style='border-bottom:1px solid #1a1a1a'>"
+            "<td style='padding:5px 8px;color:" + renk + ";font-weight:700;font-size:11px'>" + param + "</td>"
+            "<td style='padding:5px 8px;color:#fff;font-size:11px'>" + esik + "</td>"
+            "<td style='padding:5px 8px;color:#888;font-size:11px'>" + aciklama + "</td>"
+            "</tr>"
+        )
+    return (
+        "<div style='background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:12px'>"
+        "<div style='color:" + renk + ";font-weight:700;font-size:13px;margin-bottom:8px'>" + baslik + "</div>"
+        "<table style='width:100%;border-collapse:collapse'>"
+        "<thead><tr style='color:#555'>"
+        "<th style='padding:4px 8px;text-align:left;font-size:10px'>Parametre</th>"
+        "<th style='padding:4px 8px;text-align:left;font-size:10px'>Esik</th>"
+        "<th style='padding:4px 8px;text-align:left;font-size:10px'>Aciklama</th>"
+        "</tr></thead>"
+        "<tbody>" + satirlar + "</tbody>"
+        "</table></div>"
     )
 
 # ── SAYFA ─────────────────────────────────────────────────
@@ -287,124 +409,110 @@ st.markdown("<h1 style='text-align:center;color:#fff;margin-bottom:4px'>📊 Bor
 saat = datetime.now().strftime("%d.%m.%Y %H:%M")
 st.markdown(
     "<p style='text-align:center;color:#8b949e;font-size:13px'>Guncelleme: " + saat +
-    " &nbsp;|&nbsp; Filtre: RSI<70, Stoch<80 &nbsp;|&nbsp; ~15 dk gecikmeli</p>",
+    " &nbsp;|&nbsp; ~15 dk gecikmeli &nbsp;|&nbsp; Veri: Yahoo Finance</p>",
     unsafe_allow_html=True
 )
 
 col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 2])
 with col_btn2:
-    yenile = st.button("Yenile")
-if yenile:
-    st.cache_data.clear()
+    if st.button("🔄 Yenile"):
+        st.cache_data.clear()
 
 with st.spinner("BIST100 ve S&P500 taraniyor... (3-5 dakika)"):
     df_bist_raw = tara_tum(BIST100, ".IS")
-    df_sp_raw = tara_tum(SP500, "")
+    df_sp_raw   = tara_tum(SP500, "")
 
-df_bist, df_bist_gun = filtrele_ve_sirala(df_bist_raw)
-df_sp, df_sp_gun = filtrele_ve_sirala(df_sp_raw)
+bist_h, bist_g, bist_top = sec_hisseler(df_bist_raw)
+sp_h,   sp_g,   sp_top   = sec_hisseler(df_sp_raw)
 
-# Gunun ve haftanin hisseleri
-bist_gun_hisse = df_bist_gun["Hisse"].iloc[0] if len(df_bist_gun) > 0 else ""
-bist_hafta_hisseler = df_bist.head(2)["Hisse"].tolist() if len(df_bist) >= 2 else []
-sp_gun_hisse = df_sp_gun["Hisse"].iloc[0] if len(df_sp_gun) > 0 else ""
-sp_hafta_hisseler = df_sp.head(2)["Hisse"].tolist() if len(df_sp) >= 2 else []
+bist_gun    = bist_g["Hisse"].iloc[0] if len(bist_g) > 0 else "—"
+bist_hafta  = bist_h.head(2)["Hisse"].tolist() if len(bist_h) >= 2 else bist_h["Hisse"].tolist()
+sp_gun      = sp_g["Hisse"].iloc[0] if len(sp_g) > 0 else "—"
+sp_hafta    = sp_h.head(2)["Hisse"].tolist() if len(sp_h) >= 2 else sp_h["Hisse"].tolist()
 
 st.markdown("---")
 
-# Highlight kutulari
+# ── HIGHLIGHT KUTULARI ────────────────────────────────────
 col_h1, col_h2 = st.columns(2)
 
 with col_h1:
-    st.markdown("<div style='margin-bottom:8px'>", unsafe_allow_html=True)
-    if bist_gun_hisse:
-        gun_row = df_bist_gun.iloc[0]
+    if bist_gun != "—":
+        gr = bist_g.iloc[0]
         st.markdown(highlight_box(
-            "⚡", "GUNUN BIST HISSESI — Gunluk islem icin",
-            bist_gun_hisse,
-            "RSI: " + str(gun_row["RSI"]) + "  |  ADX: " + str(gun_row["ADX"]) + "  |  Hacim: " + str(gun_row["VolR"]) + "x  |  Stop: " + str(gun_row["Stop"]),
-            "#2d1f00"
+            "⚡", "GUNUN BIST HISSESI — Sabah al, aksam sat",
+            bist_gun,
+            "RSI: " + str(gr["RSI"]) + "  |  ADX: " + str(gr["ADX"]) +
+            "  |  Aroon: " + str(gr["Aroon"]) + "  |  Hacim: " + str(gr["VolR"]) +
+            "x  |  ATR%: " + str(gr["ATR_pct"]) + "%  |  Stop: " + str(gr["Stop"]),
+            "#2d1f00", "#ffd700"
         ), unsafe_allow_html=True)
-    if len(bist_hafta_hisseler) >= 1:
-        r1 = df_bist[df_bist["Hisse"] == bist_hafta_hisseler[0]].iloc[0]
+    for idx, h in enumerate(bist_hafta):
+        row = bist_h[bist_h["Hisse"] == h].iloc[0]
         st.markdown(highlight_box(
-            "★", "HAFTANIN 1. BIST HISSESI — Haftalik islem icin",
-            bist_hafta_hisseler[0],
-            "Skor: " + str(r1["Skor"]) + "/9  |  RSI: " + str(r1["RSI"]) + "  |  1G/1H/1A: " + r1["1G"] + "/" + r1["1H"] + "/" + r1["1A"],
-            "#0d2040"
+            "★", "HAFTANIN " + str(idx+1) + ". BIST HISSESI — Pzt al, Cuma sat",
+            h,
+            "Skor: " + str(row["Skor"]) + "/9  |  RSI: " + str(row["RSI"]) +
+            "  |  Aroon: " + str(row["Aroon"]) + "  |  OBV: " + row["OBV"] +
+            "  |  1G/1H/1A: " + row["1G"] + "/" + row["1H"] + "/" + row["1A"],
+            "#0d2040", "#4da6ff"
         ), unsafe_allow_html=True)
-    if len(bist_hafta_hisseler) >= 2:
-        r2 = df_bist[df_bist["Hisse"] == bist_hafta_hisseler[1]].iloc[0]
-        st.markdown(highlight_box(
-            "★", "HAFTANIN 2. BIST HISSESI — Haftalik islem icin",
-            bist_hafta_hisseler[1],
-            "Skor: " + str(r2["Skor"]) + "/9  |  RSI: " + str(r2["RSI"]) + "  |  1G/1H/1A: " + r2["1G"] + "/" + r2["1H"] + "/" + r2["1A"],
-            "#0d2040"
-        ), unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
 
 with col_h2:
-    st.markdown("<div style='margin-bottom:8px'>", unsafe_allow_html=True)
-    if sp_gun_hisse:
-        gun_row_sp = df_sp_gun.iloc[0]
+    if sp_gun != "—":
+        gr = sp_g.iloc[0]
         st.markdown(highlight_box(
-            "⚡", "GUNUN S&P500 HISSESI — Gunluk islem icin",
-            sp_gun_hisse,
-            "RSI: " + str(gun_row_sp["RSI"]) + "  |  ADX: " + str(gun_row_sp["ADX"]) + "  |  Hacim: " + str(gun_row_sp["VolR"]) + "x  |  Stop: " + str(gun_row_sp["Stop"]),
-            "#2d1f00"
+            "⚡", "GUNUN S&P500 HISSESI — Sabah al, aksam sat",
+            sp_gun,
+            "RSI: " + str(gr["RSI"]) + "  |  ADX: " + str(gr["ADX"]) +
+            "  |  Aroon: " + str(gr["Aroon"]) + "  |  Hacim: " + str(gr["VolR"]) +
+            "x  |  ATR%: " + str(gr["ATR_pct"]) + "%  |  Stop: " + str(gr["Stop"]),
+            "#2d1f00", "#ffd700"
         ), unsafe_allow_html=True)
-    if len(sp_hafta_hisseler) >= 1:
-        r1 = df_sp[df_sp["Hisse"] == sp_hafta_hisseler[0]].iloc[0]
+    for idx, h in enumerate(sp_hafta):
+        row = sp_h[sp_h["Hisse"] == h].iloc[0]
         st.markdown(highlight_box(
-            "★", "HAFTANIN 1. S&P500 HISSESI — Haftalik islem icin",
-            sp_hafta_hisseler[0],
-            "Skor: " + str(r1["Skor"]) + "/9  |  RSI: " + str(r1["RSI"]) + "  |  1G/1H/1A: " + r1["1G"] + "/" + r1["1H"] + "/" + r1["1A"],
-            "#0d2040"
+            "★", "HAFTANIN " + str(idx+1) + ". S&P500 HISSESI — Pzt al, Cuma sat",
+            h,
+            "Skor: " + str(row["Skor"]) + "/9  |  RSI: " + str(row["RSI"]) +
+            "  |  Aroon: " + str(row["Aroon"]) + "  |  OBV: " + row["OBV"] +
+            "  |  1G/1H/1A: " + row["1G"] + "/" + row["1H"] + "/" + row["1A"],
+            "#0d2040", "#4da6ff"
         ), unsafe_allow_html=True)
-    if len(sp_hafta_hisseler) >= 2:
-        r2 = df_sp[df_sp["Hisse"] == sp_hafta_hisseler[1]].iloc[0]
-        st.markdown(highlight_box(
-            "★", "HAFTANIN 2. S&P500 HISSESI — Haftalik islem icin",
-            sp_hafta_hisseler[1],
-            "Skor: " + str(r2["Skor"]) + "/9  |  RSI: " + str(r2["RSI"]) + "  |  1G/1H/1A: " + r2["1G"] + "/" + r2["1H"] + "/" + r2["1A"],
-            "#0d2040"
-        ), unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
+# ── TOP 10 TABLOLAR ───────────────────────────────────────
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("### BIST100 - Top 10")
+    st.markdown("### 🇹🇷 BIST100 — Top 10")
     st.markdown(
-        "<div style='font-size:11px;color:#8b949e;margin-bottom:8px'>"
-        "⚡ Gunun hissesi &nbsp;|&nbsp; ★ Haftanin hisseleri &nbsp;|&nbsp; Filtre: RSI &lt; 70, Stoch &lt; 80"
+        "<div style='font-size:11px;color:#8b949e;margin-bottom:6px'>"
+        "⚡ Gunun hissesi &nbsp;|&nbsp; ★ Haftanin hisseleri &nbsp;|&nbsp; Filtre: RSI &lt;70, Stoch &lt;80"
         "</div>", unsafe_allow_html=True
     )
-    st.markdown(
-        tablo_html(df_bist, 10, bist_gun_hisse, bist_hafta_hisseler),
-        unsafe_allow_html=True
-    )
-    with st.expander("Tam liste"):
-        st.markdown(tablo_html(df_bist, len(df_bist), bist_gun_hisse, bist_hafta_hisseler), unsafe_allow_html=True)
+    st.markdown(tablo_html(bist_top, 10, bist_gun, bist_hafta), unsafe_allow_html=True)
+    with st.expander("📋 Tam liste"):
+        st.markdown(tablo_html(bist_top, len(bist_top), bist_gun, bist_hafta), unsafe_allow_html=True)
+    st.markdown(legend_html("hafta"), unsafe_allow_html=True)
+    st.markdown(legend_html("gun"), unsafe_allow_html=True)
 
 with col2:
-    st.markdown("### S&P500 - Top 10")
+    st.markdown("### 🇺🇸 S&P500 — Top 10")
     st.markdown(
-        "<div style='font-size:11px;color:#8b949e;margin-bottom:8px'>"
-        "⚡ Gunun hissesi &nbsp;|&nbsp; ★ Haftanin hisseleri &nbsp;|&nbsp; Filtre: RSI &lt; 70, Stoch &lt; 80"
+        "<div style='font-size:11px;color:#8b949e;margin-bottom:6px'>"
+        "⚡ Gunun hissesi &nbsp;|&nbsp; ★ Haftanin hisseleri &nbsp;|&nbsp; Filtre: RSI &lt;70, Stoch &lt;80"
         "</div>", unsafe_allow_html=True
     )
-    st.markdown(
-        tablo_html(df_sp, 10, sp_gun_hisse, sp_hafta_hisseler),
-        unsafe_allow_html=True
-    )
-    with st.expander("Tam liste"):
-        st.markdown(tablo_html(df_sp, len(df_sp), sp_gun_hisse, sp_hafta_hisseler), unsafe_allow_html=True)
+    st.markdown(tablo_html(sp_top, 10, sp_gun, sp_hafta), unsafe_allow_html=True)
+    with st.expander("📋 Tam liste"):
+        st.markdown(tablo_html(sp_top, len(sp_top), sp_gun, sp_hafta), unsafe_allow_html=True)
+    st.markdown(legend_html("hafta"), unsafe_allow_html=True)
+    st.markdown(legend_html("gun"), unsafe_allow_html=True)
 
 st.markdown("---")
 st.markdown(
-    "<p style='text-align:center;color:#484f58;font-size:11px'>Teknik analiz amaclidir, yatirim tavsiyesi degildir. Veri: Yahoo Finance</p>",
+    "<p style='text-align:center;color:#484f58;font-size:11px'>"
+    "Teknik analiz amaclidir, yatirim tavsiyesi degildir.</p>",
     unsafe_allow_html=True
 )
