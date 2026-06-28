@@ -140,13 +140,16 @@ def skor_hesapla(df):
         obv = calc_obv(c, v)
         obv_trend = float(obv.iloc[-1]) > float(obv.iloc[-6]) if len(obv) >= 6 else False
 
-        # Son 5 gun degisimi
         chg5 = float((c.iloc[-1] - c.iloc[-6]) / c.iloc[-6] * 100) if len(c) >= 6 else 0
 
-        # Hacim son 3 gun artıyor mu
         vol3_trend = (float(v.iloc[-1]) > float(v.iloc[-2])) and (float(v.iloc[-2]) > float(v.iloc[-3])) if len(v) >= 3 else False
 
         macd_diff = float(ml.iloc[-1] - ms.iloc[-1])
+
+        # ── MOMENTUM YORGUNLUGU TESPITI ──────────────────────────────
+        # Gecen hafta analizi: Stoch>73 + 5G>%10 kombinasyonu guvenilmez sinyal
+        # Bu kombinasyon "zaten cok yukarida" anlamina geliyor
+        momentum_yorgun = (stk > 73) or (chg5 > 10) or (stk > 65 and chg5 > 6)
 
         # TEKNIK SKOR
         s = 0
@@ -159,17 +162,25 @@ def skor_hesapla(df):
         if stk < 20: s += 1
         if bwp < 0.05 and bw >= 0.05: s += 1
         if vr > 1.2: s += 1
+        # Momentum yorgunlugu cezasi
+        if momentum_yorgun: s = max(0, s - 1)
 
         # HAFTALIK SKOR
         hs = 0
         if 45 <= r <= 65: hs += 2
-        if stk < 75: hs += 1
+        # DEG: Stoch ideal penceresi daraltiIdi (eski: <75, yeni: 40-72)
+        # Neden: Stoch 73+ olan hisseler gecen hafta tutmadi (KARSN 77.4, VKGYO 78.3)
+        if 40 <= stk <= 72: hs += 2      # ideal pencere: ne cok soguk ne cok sicak
+        elif stk < 40: hs += 1           # henuz isinmamis, biraz erken ama tamam
+        # stk > 72 → puan yok (asiri alim riski)
         if adxv > 25: hs += 2
         if ml.iloc[-1] > ms.iloc[-1]: hs += 2
         if e20 > e50 and e50 > e200: hs += 2
         if aroon_val > 50: hs += 2
         if obv_trend: hs += 2
         if vr > 1.2: hs += 1
+        # Momentum yorgunlugu cezasi haftalik skora da uygulanir
+        if momentum_yorgun: hs = max(0, hs - 2)
 
         # GUNLUK SKOR
         gs = 0
@@ -185,14 +196,14 @@ def skor_hesapla(df):
 
         # PATLAMA SKORU
         ps = 0
-        if bw < 0.08: ps += 3        # BB sikismasi
-        if 45 <= r <= 58: ps += 2    # RSI henuz kosmamis
-        if vol3_trend: ps += 3       # Hacim artıyor
-        if adxv < 25: ps += 2        # Yatay ama kirilmak uzere
-        if aroon_val > 0: ps += 1    # Aroon pozife donuyor
-        if macd_diff > -0.5: ps += 1 # MACD dibe yakin
-        if chg5 > -5: ps += 1        # Son 5 gunde cok dusmemis
-        if obv_trend: ps += 2        # OBV yukseliyor
+        if bw < 0.08: ps += 3
+        if 45 <= r <= 58: ps += 2
+        if vol3_trend: ps += 3
+        if adxv < 25: ps += 2
+        if aroon_val > 0: ps += 1
+        if macd_diff > -0.5: ps += 1
+        if chg5 > -5: ps += 1
+        if obv_trend: ps += 2
 
         return {
             "RSI": round(r, 1), "Stoch": round(stk, 1),
@@ -205,6 +216,7 @@ def skor_hesapla(df):
             "BB_W": round(bw, 3),
             "Chg5": round(chg5, 1),
             "Vol3_trend": vol3_trend,
+            "MomentumYorgun": momentum_yorgun,
             "Skor": s, "HSkor": hs, "GSkor": gs, "PSkor": ps,
             "K1G": karar(r, float(ml.iloc[-1]), float(ms.iloc[-1]))
         }
@@ -233,6 +245,7 @@ def tara_tum(liste, suffix=""):
                 "BB_W": t["BB_W"], "Chg5": t["Chg5"],
                 "OBV": "↑" if t["OBV_trend"] else "↓",
                 "EMA9": "✓" if t["EMA9_ok"] else "✗",
+                "MomentumYorgun": t["MomentumYorgun"],
                 "1G": t["K1G"], "1H": k1h, "1A": k1a,
                 "AL_Puan": al_puan
             })
@@ -242,9 +255,17 @@ def tara_tum(liste, suffix=""):
 def sec_hisseler(df):
     haftalik = df[
         (df["RSI"] >= 45) & (df["RSI"] <= 65) &
-        (df["Stoch"] < 75) & (df["ADX"] > 25) &
+        # DEG: Stoch filtresi guncellendi — eski: <75, yeni: <73
+        # Neden: Gecen hafta KARSN (77.4) ve VKGYO (78.3) gibi yuksek Stoch'lu
+        # hisseler beklenen hareketi yapmadi. 73 ustunde asiri alim riski artiyor.
+        (df["Stoch"] < 73) &
+        (df["ADX"] > 25) &
         (df["MACD"] > 0) & (df["1G"] == "AL") &
-        (df["Chg5"] > -5)
+        (df["Chg5"] > -5) &
+        # DEG: Momentum yorgunlugu filtresi eklendi
+        # Neden: 5G>%10 olan hisseler (CWENE %13.7) zaten cok yukseldi,
+        # haftalik listede yer almamali
+        (~df["MomentumYorgun"])
     ].copy().sort_values("HSkor", ascending=False).reset_index(drop=True)
 
     gunluk = df[
@@ -256,11 +277,12 @@ def sec_hisseler(df):
     ].copy().sort_values("GSkor", ascending=False).reset_index(drop=True)
 
     top10 = df[
-        (df["RSI"] < 70) & (df["Stoch"] < 80) &
+        (df["RSI"] < 70) &
+        # DEG: Top10 Stoch filtresi de guncellendi — eski: <80, yeni: <73
+        (df["Stoch"] < 73) &
         (df["Chg5"] > -5)
     ].copy().sort_values(["AL_Puan", "HSkor"], ascending=False).reset_index(drop=True)
 
-    # Patlama adaylari: BB sikismasi, RSI henuz kosmamis, hacim artıyor
     patlama = df[
         (df["BB_W"] < 0.08) &
         (df["RSI"] >= 40) & (df["RSI"] <= 60) &
@@ -284,6 +306,28 @@ def skor_html(v, mx=9):
 def rsi_html(v):
     c = "#f08080" if v > 70 else "#6ee89a" if v < 30 else "#ccc"
     return "<span style='color:" + c + "'>" + str(v) + "</span>"
+
+def stoch_html(v):
+    # DEG: Stoch renklendirmesi guncellendi
+    # Yesil: 40-72 (ideal pencere), Turuncu: 73-79 (dikkat), Kirmizi: 80+ (asiri alim)
+    if v >= 80:
+        return "<span style='color:#f08080;font-weight:700'>" + str(v) + " ⚠</span>"
+    elif v >= 73:
+        return "<span style='color:#e08800;font-weight:700'>" + str(v) + " ⚠</span>"
+    elif 40 <= v <= 72:
+        return "<span style='color:#6ee89a'>" + str(v) + "</span>"
+    else:
+        return "<span style='color:#aaa'>" + str(v) + "</span>"
+
+def chg5_html(v):
+    # DEG: 5G% renklendirmesi guncellendi
+    # >%10 turuncu uyari: "zaten cok yukseldi, momentum yorgunlugu riski"
+    if v > 10:
+        return "<span style='color:#e08800;font-weight:700'>" + str(v) + "% ⚠</span>"
+    elif v >= 0:
+        return "<span style='color:#6ee89a'>" + str(v) + "%</span>"
+    else:
+        return "<span style='color:#f08080'>" + str(v) + "%</span>"
 
 def tablo_html(df, n, gun_hisse="", hafta_hisseler=None, patlama_hisseler=None):
     if hafta_hisseler is None: hafta_hisseler = []
@@ -309,20 +353,19 @@ def tablo_html(df, n, gun_hisse="", hafta_hisseler=None, patlama_hisseler=None):
         arc = "#6ee89a" if r["Aroon"] > 50 else "#aaa"
         obc = "#6ee89a" if r["OBV"] == "↑" else "#f08080"
         e9c = "#6ee89a" if r["EMA9"] == "✓" else "#f08080"
-        chg_c = "#6ee89a" if r["Chg5"] >= 0 else "#f08080"
         satirlar += (
             "<tr style='background:" + bg + ";border-bottom:1px solid #1a1a1a;" + border + "'>"
             "<td style='padding:7px 10px;font-weight:700;color:" + color + "'>" + label + "</td>"
             "<td style='text-align:center'>" + skor_html(r["Skor"]) + "</td>"
             "<td style='text-align:center'>" + rsi_html(r["RSI"]) + "</td>"
-            "<td style='text-align:center;color:#ccc'>" + str(r["Stoch"]) + "</td>"
+            "<td style='text-align:center'>" + stoch_html(r["Stoch"]) + "</td>"
             "<td style='text-align:center;color:" + mc + "'>" + str(r["MACD"]) + "</td>"
             "<td style='text-align:center;color:" + ac + "'>" + str(r["ADX"]) + "</td>"
             "<td style='text-align:center;color:" + arc + "'>" + str(r["Aroon"]) + "</td>"
             "<td style='text-align:center;color:" + obc + "'>" + r["OBV"] + "</td>"
             "<td style='text-align:center;color:" + e9c + "'>" + r["EMA9"] + "</td>"
             "<td style='text-align:center;color:#e08800'>" + str(r["ATR_pct"]) + "%</td>"
-            "<td style='text-align:center;color:" + chg_c + "'>" + str(r["Chg5"]) + "%</td>"
+            "<td style='text-align:center'>" + chg5_html(r["Chg5"]) + "</td>"
             "<td style='text-align:center;color:#f08080'>" + str(r["Stop"]) + "</td>"
             "<td style='text-align:center'>" + badge(r["1G"]) + "</td>"
             "<td style='text-align:center'>" + badge(r["1H"]) + "</td>"
@@ -350,7 +393,6 @@ def patlama_tablo_html(df, n=10):
         bb_c = "#cc44ff" if r["BB_W"] < 0.05 else "#e08800"
         mc   = "#6ee89a" if r["MACD"] > 0 else "#f08080"
         obc  = "#6ee89a" if r["OBV"] == "↑" else "#f08080"
-        chg_c = "#6ee89a" if r["Chg5"] >= 0 else "#f08080"
         satirlar += (
             "<tr style='background:#1a0d2e;border-bottom:1px solid #2a1a3e;border-left:3px solid #cc44ff'>"
             "<td style='padding:7px 10px;font-weight:700;color:#cc44ff'>" + r["Hisse"] + " 🚀</td>"
@@ -359,7 +401,7 @@ def patlama_tablo_html(df, n=10):
             "<td style='text-align:center;color:#ccc'>" + str(r["ADX"]) + "</td>"
             "<td style='text-align:center;color:" + mc + "'>" + str(r["MACD"]) + "</td>"
             "<td style='text-align:center;color:" + obc + "'>" + r["OBV"] + "</td>"
-            "<td style='text-align:center;color:" + chg_c + "'>" + str(r["Chg5"]) + "%</td>"
+            "<td style='text-align:center'>" + chg5_html(r["Chg5"]) + "</td>"
             "<td style='text-align:center;color:#e08800'>" + str(r["VolR"]) + "x</td>"
             "<td style='text-align:center'>" + badge(r["1G"]) + "</td>"
             "<td style='text-align:center'>" + badge(r["1H"]) + "</td>"
@@ -405,13 +447,13 @@ def legend_html(tip):
     elif tip == "hafta":
         items = [
             ("RSI","45-65","Ne asiri alim ne satim"),
-            ("Stoch","< 75","Asiri alimda degil"),
+            ("Stoch","40-72","Ideal pencere — 73+ asiri alim riski ⚠"),
             ("ADX","> 25","Trend guclu"),
             ("MACD","Pozitif","Momentum yukari"),
             ("EMA","20>50>200","Tam sirali trend"),
             ("Aroon","> 50","Trend taze"),
             ("OBV","Yukseliyor","Para girisi var"),
-            ("5G%","> -5%","Son 5 gunde cok dusmemis"),
+            ("5G%","-5% ile +10% arasi","10%+ ise momentum yorgunlugu riski ⚠"),
         ]
         baslik = "★ Haftalik Kural Seti"; renk = "#4da6ff"
     else:
@@ -544,7 +586,8 @@ with col1:
     st.markdown("### 🇹🇷 BIST100 — Top 10")
     st.markdown(
         "<div style='font-size:11px;color:#8b949e;margin-bottom:6px'>"
-        "⚡ Gunun hissesi | ★ Haftanin hisseleri | 🚀 Patlama adayi | Filtre: RSI&lt;70, Stoch&lt;80, 5G&gt;-5%"
+        "⚡ Gunun hissesi | ★ Haftanin hisseleri | 🚀 Patlama adayi | "
+        "Filtre: RSI&lt;70, Stoch&lt;73 ⚠, 5G&gt;-5% | ⚠ = Momentum yorgunlugu riski"
         "</div>", unsafe_allow_html=True)
     st.markdown(tablo_html(bist_top, 10, bist_gun, bist_hafta, bist_pat_list), unsafe_allow_html=True)
     with st.expander("📋 Tam liste"):
@@ -556,7 +599,8 @@ with col2:
     st.markdown("### 🇺🇸 S&P500 — Top 10")
     st.markdown(
         "<div style='font-size:11px;color:#8b949e;margin-bottom:6px'>"
-        "⚡ Gunun hissesi | ★ Haftanin hisseleri | 🚀 Patlama adayi | Filtre: RSI&lt;70, Stoch&lt;80, 5G&gt;-5%"
+        "⚡ Gunun hissesi | ★ Haftanin hisseleri | 🚀 Patlama adayi | "
+        "Filtre: RSI&lt;70, Stoch&lt;73 ⚠, 5G&gt;-5% | ⚠ = Momentum yorgunlugu riski"
         "</div>", unsafe_allow_html=True)
     st.markdown(tablo_html(sp_top, 10, sp_gun, sp_hafta, sp_pat_list), unsafe_allow_html=True)
     with st.expander("📋 Tam liste"):
